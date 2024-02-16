@@ -1,4 +1,7 @@
 *~
+*.pvd
+*.vtu
+*.pvtu
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

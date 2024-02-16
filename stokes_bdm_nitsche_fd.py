@@ -1,3 +1,4 @@
+# NOTE: Using Nitsche bcs messes up the exact mass conservation
 # Solve Stokes with homog bcs u.n = u0 and tangential stress = data
 from firedrake import *
 from fvm_fd import CentroidDistance
@@ -5,81 +6,7 @@ from petsc4py import PETSc
 
 print = PETSc.Sys.Print
 
-# NOTE: these are the jump operators from Krauss, Zikatonov paper.
-# Jump is just a difference and it preserves the rank 
-Jump = lambda arg: arg('+') - arg('-')
-# Average uses dot with normal and AGAIN MINUS; it reduces the rank
-Avg = lambda arg, n: Constant(0.5)*(dot(arg('+'), n('+')) - dot(arg('-'), n('-')))
-# Action of (1 - n x n)
-Tangent = lambda v, n: v - n*dot(v, n)    
-
-
-# CellDiameter = CentroidDistance   # NOTE: also adjust the penalty parameter
-
-
-def Stabilization(mesh, u, v, mu, penalty, consistent=True):
-    '''Displacement/Flux Stabilization from Krauss et al paper'''
-    n, hA = FacetNormal(mesh), avg(CellDiameter(mesh))
-    
-    D = lambda v: sym(grad(v))
-
-    if consistent:
-        return (-inner(Avg(2*mu*D(u), n), Jump(Tangent(v, n)))*dS
-                -inner(Avg(2*mu*D(v), n), Jump(Tangent(u, n)))*dS
-                + 2*mu*(penalty/hA)*inner(Jump(Tangent(u, n)), Jump(Tangent(v, n)))*dS)
-    # For preconditioning
-    return 2*mu*(penalty/hA)*inner(Jump(Tangent(u, n)), Jump(Tangent(v, n)))*dS
-
-
-def setup_geometry(ncells, dim=2):
-    '''Marked unit square'''
-    if dim == 2:
-        mesh = UnitSquareMesh(ncells, ncells)
-    else:
-        mesh = UnitCubeMesh(ncells, ncells, ncells)
-    return mesh
-
-
-def setup_mms(mesh, mu_value=1.0, dim=2):
-    '''For a unit square'''
-    mu0 = Constant(mu_value)
-
-    if dim == 2:
-        x, y = SpatialCoordinate(mesh)
-        phi = sin(pi*(x-y))
-        p = cos(pi*(x+y))
-        
-        u = as_vector((phi.dx(1), -phi.dx(0)))
-        
-        normals = {1: Constant((-1, 0)),
-                   2: Constant((1, 0)),
-                   3: Constant((0, -1)),
-                   4: Constant((0, 1))}
-    else:
-        x, y, z = SpatialCoordinate(mesh)
-
-        phi = sin(pi*(x-y))
-        p = cos(pi*(x+y))
-        
-        u = as_vector((phi.dx(1), -phi.dx(0), x+y))
-        
-        normals = {1: Constant((-1, 0, 0)),
-                   2: Constant((1, 0, 0)),
-                   3: Constant((0, -1, 0)),
-                   4: Constant((0, 1, 0)),
-                   5: Constant((0, 0, -1)),
-                   6: Constant((0, 0, 1))}
-        
-    sigma = 2*mu0*sym(grad(u)) - p*Identity(len(u))
-    f = -div(sigma)
-
-    tangent_traction = lambda n: Tangent(dot(sigma, n), n)
-
-    return {
-        'f0': f,
-        'u0': u,
-        'p0': p,
-        'tangent_tractions': {tag: tangent_traction(normals[tag]) for tag in normals}}
+from stokes_bdm_fd import Jump, Avg, Tangent, Stabilization
 
 
 def setup_system(mesh, mu, data):
@@ -98,7 +25,10 @@ def setup_system(mesh, mu, data):
     v, q = TestFunctions(W)
 
     mu = Constant(mu)
-    a = (inner(2*mu*sym(grad(u)), sym(grad(v)))*dx - inner(p, div(v))*dx
+
+    sigma = lambda u, p: 2*mu*sym(grad(u)) - p*Identity(len(u))
+    
+    a = (inner(sigma(u, p), sym(grad(v)))*dx
          -inner(q, div(u))*dx)
 
     # Account for HDiv
@@ -109,13 +39,27 @@ def setup_system(mesh, mu, data):
     L += sum(inner(Tangent(v, n), traction)*ds(tag)
              for (tag, traction) in data['tangent_tractions'].items())
 
-    bcs = DirichletBC(W.sub(0), data['u0'], 'on_boundary')
+    bcs = None
+
+    hK = CellDiameter(mesh)
+    gamma = penalty
+    # Use Nitsche instead
+    a += (-inner(dot(n, dot(sigma(u, p), n)), dot(v, n))*ds
+          -inner(dot(n, dot(sigma(v, q), n)), dot(u, n))*ds
+          +(gamma/hK)*inner(dot(u, n), dot(v, n))*ds)
+
+    L += (-inner(dot(n, dot(sigma(v, q), n)), dot(mms_data['u0'], n))*ds
+          +(gamma/hK)*inner(dot(mms_data['u0'], n), dot(v, n))*ds)    
 
     # Preconditioner
     a_prec = (inner(2*mu*sym(grad(u)), sym(grad(v)))*dx
               + (1/mu)*inner(p, q)*dx)
     # Account for HDiv
-    a_prec += Stabilization(mesh, u, v, mu, penalty=penalty, consistent=True)
+    a_prec += Stabilization(mesh, u, v, mu, penalty=penalty, consistent=False)
+    # And the boundary conditions
+    a_prec += (#-inner(dot(n, dot(sigma(u, p), n)), dot(v, n))*ds
+               #-inner(dot(n, dot(sigma(v, q), n)), dot(u, n))*ds
+               +(gamma/hK)*inner(dot(u, n), dot(v, n))*ds)    
                                        
     return a, L, W, bcs, a_prec
 
@@ -136,9 +80,10 @@ solver_params = {
 # --------------------------------------------------------------------
 
 if __name__ == '__main__':
+    from stokes_bdm_fd import setup_geometry, setup_mms
     import tabulate
 
-    dim = 3
+    dim = 2
     
     mu_value = 1.0
 
