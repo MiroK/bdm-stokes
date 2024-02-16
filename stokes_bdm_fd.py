@@ -132,7 +132,7 @@ solver_params = {
     'fieldsplit_1_ksp_type': 'preonly',
     'fieldsplit_1_pc_type': 'lu',
 }
-
+    
 # --------------------------------------------------------------------
 
 if __name__ == '__main__':
@@ -144,7 +144,7 @@ if __name__ == '__main__':
 
     history = []
     headers = ('dimW', '|eu|_1', '|eu|_div', '|div u|_0', '|ep|_0', 'niters', '|r|')
-    for k in range(2, 8):
+    for k in range(2, 5):
         ncells = 2**k
         mesh = setup_geometry(ncells, dim=dim)
 
@@ -179,8 +179,22 @@ if __name__ == '__main__':
         history.append((W.dim(), eu_H1, eu_div, div_uh, ep_L2, niters, rnorm))
         print(tabulate.tabulate(history, headers=headers))
 
+        
+        ph_p1 = project(ph, FunctionSpace(mesh, 'CG', 1),
+                        solver_parameters={ 
+                            'ksp_type': 'cg',
+                            'ksp_rtol': 1E-40,
+                            'ksp_atol': 1E-13,        
+                            'ksp_view': None,
+                            'pc_type': 'hypre'})
+                        
+        # ----
+        
         outfile = File("uh.pvd")
         outfile.write(uh)
 
         outfile = File("ph.pvd")
-        outfile.write(ph)                
+        outfile.write(ph)
+
+        outfile = File("ph_p1.pvd")
+        outfile.write(ph_p1)                        

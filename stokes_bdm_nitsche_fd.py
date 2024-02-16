@@ -1,4 +1,5 @@
-# NOTE: Using Nitsche bcs messes up the exact mass conservation
+# NOTE: Using Nitsche bcs messes up the exact mass conservation!!!
+
 # Solve Stokes with homog bcs u.n = u0 and tangential stress = data
 from firedrake import *
 from fvm_fd import CentroidDistance
